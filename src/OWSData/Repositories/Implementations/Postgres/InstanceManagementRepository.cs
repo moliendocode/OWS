@@ -121,9 +121,20 @@ namespace OWSData.Repositories.Implementations.Postgres
 
         public async Task<SuccessAndErrorMessage> ShutDownWorldServer(Guid customerGUID, int worldServerID)
         {
-            using (Connection)
+            using (var connection = Connection as NpgsqlConnection) // Castear a NpgsqlConnection
             {
-                using (IDbTransaction transaction = Connection.BeginTransaction())
+                if (connection == null)
+                {
+                    throw new InvalidOperationException("Connection is not an NpgsqlConnection");
+                }
+
+                // Abrir la conexión explícitamente si no está abierta
+                if (connection.State != ConnectionState.Open)
+                {
+                    await connection.OpenAsync();
+                }
+
+                using (IDbTransaction transaction = connection.BeginTransaction())
                 {
                     try
                     {
@@ -132,17 +143,20 @@ namespace OWSData.Repositories.Implementations.Postgres
                         parameter.Add("@WorldServerID", worldServerID);
                         parameter.Add("@ServerStatus", 0);
 
-                        await Connection.ExecuteAsync(GenericQueries.RemoveAllCharactersFromAllInstancesByWorldID,
+                        await connection.ExecuteAsync(GenericQueries.RemoveAllCharactersFromAllInstancesByWorldID,
                             parameter,
-                            commandType: CommandType.Text);
+                            commandType: CommandType.Text,
+                            transaction: transaction); // Pasar la transacción explícitamente
 
-                        await Connection.ExecuteAsync(GenericQueries.RemoveAllMapInstancesForWorldServer,
+                        await connection.ExecuteAsync(GenericQueries.RemoveAllMapInstancesForWorldServer,
                             parameter,
-                            commandType: CommandType.Text);
+                            commandType: CommandType.Text,
+                            transaction: transaction); // Pasar la transacción explícitamente
 
-                        await Connection.ExecuteAsync(GenericQueries.UpdateWorldServerStatus,
+                        await connection.ExecuteAsync(GenericQueries.UpdateWorldServerStatus,
                             parameter,
-                            commandType: CommandType.Text);
+                            commandType: CommandType.Text,
+                            transaction: transaction); // Pasar la transacción explícitamente
 
                         transaction.Commit();
                     }

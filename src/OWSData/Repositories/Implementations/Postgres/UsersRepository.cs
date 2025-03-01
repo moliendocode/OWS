@@ -81,9 +81,15 @@ namespace OWSData.Repositories.Implementations.Postgres
         {
             SuccessAndErrorMessage outputObject = new SuccessAndErrorMessage();
 
-            using (Connection)
+            using (var connection = Connection)
             {
-                using (IDbTransaction transaction = Connection.BeginTransaction())
+                // Abrir la conexión explícitamente
+                if (connection.State != ConnectionState.Open)
+                {
+                    connection.Open();
+                }
+
+                using (IDbTransaction transaction = connection.BeginTransaction())
                 {
                     try
                     {
@@ -93,15 +99,18 @@ namespace OWSData.Repositories.Implementations.Postgres
                         parameters.Add("CharacterName", characterName);
                         parameters.Add("DefaultSetName", defaultSetName);
 
-                        int outputCharacterId = await Connection.QuerySingleOrDefaultAsync<int>(
+                        int outputCharacterId = await connection.QuerySingleOrDefaultAsync<int>(
                             PostgresQueries.AddCharacterUsingDefaultCharacterValues,
                             parameters,
-                            commandType: CommandType.Text);
+                            commandType: CommandType.Text,
+                            transaction: transaction); // Pasar la transacción explícitamente
 
                         parameters.Add("CharacterID", outputCharacterId);
-                        await Connection.ExecuteAsync(GenericQueries.AddDefaultCustomCharacterData,
+                        await connection.ExecuteAsync(GenericQueries.AddDefaultCustomCharacterData,
                             parameters,
-                            commandType: CommandType.Text);
+                            commandType: CommandType.Text,
+                            transaction: transaction); // Pasar la transacción explícitamente
+
                         transaction.Commit();
                     }
                     catch (Exception ex)
@@ -112,7 +121,6 @@ namespace OWSData.Repositories.Implementations.Postgres
                             Success = false,
                             ErrorMessage = ex.Message
                         };
-
                         return outputObject;
                     }
                 }

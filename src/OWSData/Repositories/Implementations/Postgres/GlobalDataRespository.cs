@@ -30,21 +30,31 @@ namespace OWSData.Repositories.Implementations.Postgres
 
         public async Task AddOrUpdateGlobalData(GlobalData globalData)
         {
-            using (Connection)
+            using (var connection = Connection as NpgsqlConnection)
             {
-                var outputGlobalData = await Connection.QuerySingleOrDefaultAsync<GlobalData>(GenericQueries.GetGlobalDataByGlobalDataKey,
+                if (connection == null)
+                {
+                    throw new InvalidOperationException("Connection is not an NpgsqlConnection");
+                }
+
+                if (connection.State != ConnectionState.Open)
+                {
+                    await connection.OpenAsync();
+                }
+
+                var outputGlobalData = await connection.QuerySingleOrDefaultAsync<GlobalData>(GenericQueries.GetGlobalDataByGlobalDataKey,
                     globalData,
                     commandType: CommandType.Text);
 
                 if (outputGlobalData != null)
                 {
-                    await Connection.ExecuteAsync(GenericQueries.UpdateGlobalData,
+                    await connection.ExecuteAsync(GenericQueries.UpdateGlobalData,
                         globalData,
                         commandType: CommandType.Text);
                 }
                 else
                 {
-                    await Connection.ExecuteAsync(GenericQueries.AddGlobalData,
+                    await connection.ExecuteAsync(GenericQueries.AddGlobalData,
                         globalData,
                         commandType: CommandType.Text);
                 }

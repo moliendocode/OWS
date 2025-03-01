@@ -30,9 +30,19 @@ namespace OWSData.Repositories.Implementations.Postgres
 
         public async Task AddCharacterToMapInstanceByCharName(Guid customerGUID, string characterName, int mapInstanceID)
         {
-            using (Connection)
+            using (var connection = Connection as NpgsqlConnection)
             {
-                using (IDbTransaction transaction = Connection.BeginTransaction())
+                if (connection == null)
+                {
+                    throw new InvalidOperationException("Connection is not an NpgsqlConnection");
+                }
+
+                if (connection.State != ConnectionState.Open)
+                {
+                    await connection.OpenAsync();
+                }
+
+                using (IDbTransaction transaction = connection.BeginTransaction())
                 {
                     try
                     {
@@ -41,12 +51,12 @@ namespace OWSData.Repositories.Implementations.Postgres
                         parameters.Add("@CharName", characterName);
                         parameters.Add("@MapInstanceID", mapInstanceID);
 
-                        var outputCharacter = await Connection.QuerySingleOrDefaultAsync<Characters>(
+                        var outputCharacter = await connection.QuerySingleOrDefaultAsync<Characters>(
                             GenericQueries.GetCharacterIDByName,
                             parameters,
                             commandType: CommandType.Text);
 
-                        var outputZone = await Connection.QuerySingleOrDefaultAsync<Maps>(GenericQueries.GetZoneName,
+                        var outputZone = await connection.QuerySingleOrDefaultAsync<Maps>(GenericQueries.GetZoneName,
                             parameters,
                             commandType: CommandType.Text);
 
@@ -55,17 +65,20 @@ namespace OWSData.Repositories.Implementations.Postgres
                             parameters.Add("@CharacterID", outputCharacter.CharacterId);
                             parameters.Add("@ZoneName", outputZone.ZoneName);
 
-                            await Connection.ExecuteAsync(GenericQueries.RemoveCharacterFromAllInstances,
+                            await connection.ExecuteAsync(GenericQueries.RemoveCharacterFromAllInstances,
                                 parameters,
-                                commandType: CommandType.Text);
+                                commandType: CommandType.Text,
+                                transaction: transaction);
 
-                            await Connection.ExecuteAsync(GenericQueries.AddCharacterToInstance,
+                            await connection.ExecuteAsync(GenericQueries.AddCharacterToInstance,
                                 parameters,
-                                commandType: CommandType.Text);
+                                commandType: CommandType.Text,
+                                transaction: transaction);
 
-                            await Connection.ExecuteAsync(GenericQueries.UpdateCharacterZone,
+                            await connection.ExecuteAsync(GenericQueries.UpdateCharacterZone,
                                 parameters,
-                                commandType: CommandType.Text);
+                                commandType: CommandType.Text,
+                                transaction: transaction);
                         }
 
                         transaction.Commit();
@@ -140,9 +153,20 @@ namespace OWSData.Repositories.Implementations.Postgres
 
         public async Task CleanUpInstances(Guid customerGUID)
         {
-            using (Connection)
+            using (var connection = Connection as NpgsqlConnection) // Castear a NpgsqlConnection
             {
-                using (IDbTransaction transaction = Connection.BeginTransaction())
+                if (connection == null)
+                {
+                    throw new InvalidOperationException("Connection is not an NpgsqlConnection");
+                }
+
+                // Abrir la conexión explícitamente si no está abierta
+                if (connection.State != ConnectionState.Open)
+                {
+                    await connection.OpenAsync();
+                }
+
+                using (IDbTransaction transaction = connection.BeginTransaction())
                 {
                     try
                     {
@@ -171,7 +195,6 @@ namespace OWSData.Repositories.Implementations.Postgres
                             await transaction.ExecuteAsync(PostgresQueries.RemoveMapInstances,
                                 parameters,
                                 commandType: CommandType.Text);
-
                         }
 
                         transaction.Commit();
@@ -240,36 +263,22 @@ namespace OWSData.Repositories.Implementations.Postgres
 
         public async Task<JoinMapByCharName> JoinMapByCharName(Guid customerGUID, string characterName, string zoneName, int playerGroupType)
         {
-            // TODO: Run Cleanup here for now. Later this can get moved to a scheduler to run periodically.
             await CleanUpInstances(customerGUID);
 
-            JoinMapByCharName outputObject = new JoinMapByCharName();
-
-            string serverIp = "";
-            int? worldServerId = 0;
-            string worldServerIp = "";
-            int worldServerPort = 0;
-            int port = 0;
-            int mapInstanceID = 0;
-            string mapNameToStart = "";
-            int? mapInstanceStatus = 0;
-            bool needToStartupMap = false;
-            bool enableAutoLoopback = false;
-            bool noPortForwarding = false;
-
-            outputObject = new JoinMapByCharName()
+            JoinMapByCharName outputObject = new JoinMapByCharName
             {
-                ServerIP = serverIp,
-                Port = port,
+                ServerIP = "",
+                Port = 0,
                 WorldServerID = -1,
-                WorldServerIP = worldServerIp,
-                WorldServerPort = worldServerPort,
-                MapInstanceID = mapInstanceID,
-                MapNameToStart = mapNameToStart,
+                WorldServerIP = "",
+                WorldServerPort = 0,
+                MapInstanceID = 0,
+                MapNameToStart = "",
                 MapInstanceStatus = -1,
                 NeedToStartupMap = false,
                 EnableAutoLoopback = false,
-                NoPortForwarding = false
+                NoPortForwarding = false,
+                Success = false // Inicializamos como false
             };
 
             using (Connection)
@@ -287,7 +296,6 @@ namespace OWSData.Repositories.Implementations.Postgres
                 if (outputMap == null)
                 {
                     Console.WriteLine($"CharactersRepository: JoinMapByCharName - Unable to find Zone Name: {zoneName} for CustomerGUID: {customerGUID}  Check your Maps table for this row!");
-
                     return outputObject;
                 }
 
@@ -298,7 +306,6 @@ namespace OWSData.Repositories.Implementations.Postgres
                 if (outputCharacter == null)
                 {
                     Console.WriteLine($"CharactersRepository: JoinMapByCharName - Unable to find Character by Name: {characterName} for CustomerGUID: {customerGUID}");
-
                     return outputObject;
                 }
 
@@ -309,7 +316,6 @@ namespace OWSData.Repositories.Implementations.Postgres
                 if (outputCustomer == null)
                 {
                     Console.WriteLine($"CharactersRepository: JoinMapByCharName - Unable to find Customer for CustomerGUID: {customerGUID}");
-
                     return outputObject;
                 }
 
@@ -349,36 +355,42 @@ namespace OWSData.Repositories.Implementations.Postgres
                     outputObject.Port = outputJoinMapByCharName.Port;
                     outputObject.MapInstanceID = outputJoinMapByCharName.MapInstanceID;
                     outputObject.MapNameToStart = outputMap.MapName;
+                    outputObject.MapInstanceStatus = outputJoinMapByCharName.MapInstanceStatus; // Actualizar el estado
+                    outputObject.Success = true; // Marcar como éxito si se encuentra una instancia
                 }
                 else
                 {
                     MapInstances outputMapInstance = await SpinUpInstance(customerGUID, zoneName, outputPlayerGroup.PlayerGroupId);
 
-                    parameters.Add("@WorldServerId", outputMapInstance.WorldServerId);
-
-                    WorldServers outputWorldServers =  await Connection.QuerySingleOrDefaultAsync<WorldServers>(GenericQueries.GetWorldByID,
-                        parameters,
-                        commandType: CommandType.Text);
-
-                    outputObject.NeedToStartupMap = true;
-                    outputObject.WorldServerID = outputMapInstance.WorldServerId;
-                    outputObject.ServerIP = outputWorldServers.ServerIp;
-                    if (outputCharacter.IsInternalNetworkTestUser)
+                    if (outputMapInstance.MapInstanceId > 0) // Verificar que se creó una instancia válida
                     {
-                        outputObject.ServerIP = outputWorldServers.InternalServerIp;
+                        parameters.Add("@WorldServerId", outputMapInstance.WorldServerId);
+
+                        WorldServers outputWorldServers = await Connection.QuerySingleOrDefaultAsync<WorldServers>(GenericQueries.GetWorldByID,
+                            parameters,
+                            commandType: CommandType.Text);
+
+                        outputObject.NeedToStartupMap = true;
+                        outputObject.WorldServerID = outputMapInstance.WorldServerId;
+                        outputObject.ServerIP = outputWorldServers.ServerIp;
+                        if (outputCharacter.IsInternalNetworkTestUser)
+                        {
+                            outputObject.ServerIP = outputWorldServers.InternalServerIp;
+                        }
+                        outputObject.WorldServerIP = outputWorldServers.InternalServerIp;
+                        outputObject.WorldServerPort = outputWorldServers.Port;
+                        outputObject.Port = outputMapInstance.Port;
+                        outputObject.MapInstanceID = outputMapInstance.MapInstanceId;
+                        outputObject.MapNameToStart = outputMap.MapName;
+                        outputObject.MapInstanceStatus = outputMapInstance.Status; // Usar el estado de la nueva instancia
+                        outputObject.Success = true; // Marcar como éxito si se crea una instancia
                     }
-                    outputObject.WorldServerIP = outputWorldServers.InternalServerIp;
-                    outputObject.WorldServerPort = outputWorldServers.Port;
-                    outputObject.Port = outputMapInstance.Port;
-                    outputObject.MapInstanceID = outputMapInstance.MapInstanceId;
-                    outputObject.MapNameToStart = outputMap.MapName;
                 }
 
                 if (outputCharacter.Email.Contains("@localhost") || outputCharacter.IsInternalNetworkTestUser)
                 {
                     outputObject.ServerIP = "127.0.0.1";
                 }
-
             }
 
             return outputObject;
